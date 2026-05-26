@@ -361,9 +361,11 @@ const PROVIDERS = {
 
 function hasAIKey(){
   const p=DB.provider;
-  if(p==='anthropic') return !!DB.key;
-  if(p==='gemini')    return !!DB.geminiKey;
-  if(p==='openai')    return !!DB.openaiKey;
+  if(p==='anthropic' && DB.key) return true;
+  if(p==='gemini' && DB.geminiKey) return true;
+  if(p==='openai' && DB.openaiKey) return true;
+  // Fallback — if Gemini shared key exists, always allow entry
+  if(DB.geminiKey) return true;
   return false;
 }
 
@@ -376,7 +378,10 @@ function getActiveKey(){
 }
 
 async function callAI(systemPrompt, userPrompt){
-  const p=DB.provider;
+  // If provider has no key but Gemini shared key exists, use Gemini
+  let p=DB.provider;
+  if(p==='anthropic' && !DB.key && DB.geminiKey) p='gemini';
+  if(p==='openai' && !DB.openaiKey && DB.geminiKey) p='gemini';
   if(p==='anthropic'){
     const resp=await fetch('https://api.anthropic.com/v1/messages',{
       method:'POST',
@@ -1878,13 +1883,15 @@ function resetTeamToDefault(){
   render();
 }
 
-// Init — pre-load shared workspace credentials
+// Init — pre-load shared workspace credentials (always overwrite to ensure fresh config)
 (function(){
-  if(!localStorage.getItem('hub_sb_url')) localStorage.setItem('hub_sb_url','https://saygsgqrzuxlauaiqfyu.supabase.co');
-  if(!localStorage.getItem('hub_sb_anon')) localStorage.setItem('hub_sb_anon','eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNheWdzZ3FyenV4bGF1YWlxZnl1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk4MTI3MzgsImV4cCI6MjA5NTM4ODczOH0.t-esIvD5j4UwuKTA1VpGLUsOJm6tr1Bt8SnJlT_G2Ec');
-  // Shared Gemini key — team members do not need to enter an API key
-  if(!localStorage.getItem('hub_gemini_key')) localStorage.setItem('hub_gemini_key','AIzaSyA6JBti_oSWjBLcO9l6Tzlcp3ENYHTUdNU');
-  if(!localStorage.getItem('hub_provider')) localStorage.setItem('hub_provider','gemini');
+  // Always set Supabase credentials
+  localStorage.setItem('hub_sb_url','https://saygsgqrzuxlauaiqfyu.supabase.co');
+  localStorage.setItem('hub_sb_anon','eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNheWdzZ3FyenV4bGF1YWlxZnl1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk4MTI3MzgsImV4cCI6MjA5NTM4ODczOH0.t-esIvD5j4UwuKTA1VpGLUsOJm6tr1Bt8SnJlT_G2Ec');
+  // Always set shared Gemini key
+  localStorage.setItem('hub_gemini_key','AIzaSyA6JBti_oSWjBLcO9l6Tzlcp3ENYHTUdNU');
+  // Always default to Gemini — overrides any stale provider setting
+  localStorage.setItem('hub_provider','gemini');
 })();
 initSupabase();
 render();
