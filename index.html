@@ -306,19 +306,19 @@ textarea{resize:vertical;min-height:90px;line-height:1.6}
     </div>
   </div>
   <div class="sb-nav">
-    <div class="ni active" id="nav-hub" onclick="go('hub')"><i class="ti ti-layout-dashboard"></i> Agent Hub</div>
-    <div class="ni" id="nav-teamdash" onclick="go('teamdash')"><i class="ti ti-chart-dots"></i> Team Dashboard</div>
+    <div class="ni active" id="nav-hub" data-nav="hub"><i class="ti ti-layout-dashboard"></i> Agent Hub</div>
+    <div class="ni" id="nav-teamdash" data-nav="teamdash"><i class="ti ti-chart-dots"></i> Team Dashboard</div>
     <div class="sb-sect">Agents</div>
-    <div class="ni" id="nav-assess" onclick="go('assess')"><i class="ti ti-clipboard-check"></i> <span>Org Assessment</span><div class="agent-dot" style="background:var(--teal)"></div></div>
-    <div class="ni" id="nav-prompts" onclick="go('prompts')"><i class="ti ti-message-dots"></i> <span>Prompt Strategy</span><div class="agent-dot" style="background:var(--purple)"></div></div>
-    <div class="ni" id="nav-govern" onclick="go('govern')"><i class="ti ti-shield-half"></i> <span>Governance &amp; Risk</span><div class="agent-dot" style="background:var(--amber)"></div></div>
-    <div class="ni" id="nav-agents" onclick="go('agents')"><i class="ti ti-robot"></i> <span>Agent Recommender</span><div class="agent-dot" style="background:var(--red)"></div></div>
-    <div class="ni" id="nav-roadmap" onclick="go('roadmap')"><i class="ti ti-route"></i> <span>Implementation Roadmap</span><div class="agent-dot" style="background:var(--blue)"></div></div>
-    <div class="ni" id="nav-builder" onclick="go('builder')"><i class="ti ti-wand"></i> <span>Agent Builder</span><div class="agent-dot" style="background:#0891B2"></div></div>
+    <div class="ni" id="nav-assess" data-nav="assess"><i class="ti ti-clipboard-check"></i> <span>Org Assessment</span><div class="agent-dot" style="background:var(--teal)"></div></div>
+    <div class="ni" id="nav-prompts" data-nav="prompts"><i class="ti ti-message-dots"></i> <span>Prompt Strategy</span><div class="agent-dot" style="background:var(--purple)"></div></div>
+    <div class="ni" id="nav-govern" data-nav="govern"><i class="ti ti-shield-half"></i> <span>Governance &amp; Risk</span><div class="agent-dot" style="background:var(--amber)"></div></div>
+    <div class="ni" id="nav-agents" data-nav="agents"><i class="ti ti-robot"></i> <span>Agent Recommender</span><div class="agent-dot" style="background:var(--red)"></div></div>
+    <div class="ni" id="nav-roadmap" data-nav="roadmap"><i class="ti ti-route"></i> <span>Implementation Roadmap</span><div class="agent-dot" style="background:var(--blue)"></div></div>
+    <div class="ni" id="nav-builder" data-nav="builder"><i class="ti ti-wand"></i> <span>Agent Builder</span><div class="agent-dot" style="background:#0891B2"></div></div>
     <div class="sb-sect">Team</div>
-    <div class="ni" id="nav-history" onclick="go('history')"><i class="ti ti-history"></i> Activity Feed</div>
+    <div class="ni" id="nav-history" data-nav="history"><i class="ti ti-history"></i> Activity Feed</div>
     <div class="sb-sect">Config</div>
-    <div class="ni" id="nav-settings" onclick="go('settings')"><i class="ti ti-settings"></i> Settings</div>
+    <div class="ni" id="nav-settings" data-nav="settings"><i class="ti ti-settings"></i> Settings</div>
   </div>
   <div class="sb-foot">Human First. Strategy Second.<br>AI Third.™</div>
 </nav>
@@ -776,6 +776,14 @@ function go(v,id){
   if(v==='history'||v==='teamdash'){ loadHistory(); } else render();
 }
 
+function attachNavListeners(){
+  document.querySelectorAll('[data-nav]').forEach(function(el){
+    el.addEventListener('click', function(){
+      go(this.getAttribute('data-nav'));
+    });
+  });
+}
+
 function render(){
   const body=document.getElementById('pageBody');
   const title=document.getElementById('phTitle');
@@ -788,10 +796,28 @@ function render(){
   if(!DB.currentUser){ title.textContent='Who are you?'; sub.textContent='Select your name'; if(whoBar) whoBar.style.display='none'; body.innerHTML=renderWhoAreYou(); return; }
   if(whoBar){ whoBar.style.display='flex'; if(whoName) whoName.textContent=DB.currentUser; updateSyncStatus(); }
   const viewRenders = {
-    hub:      ()=>{ title.textContent='Agent Hub'; sub.textContent='Select an agent below to get started'; body.innerHTML=renderHub(); },
-    teamdash: ()=>{ title.textContent='Team Dashboard'; sub.textContent='All results across agents, organizations, and team members'; right.innerHTML='<button class="btn btn-s btn-sm" onclick="loadHistory()"><i class="ti ti-refresh"></i> Refresh</button>'; body.innerHTML=renderTeamDashboard(); },
-    history:  ()=>{ title.textContent='Activity Feed'; sub.textContent='All agent runs in chronological order'; right.innerHTML='<button class="btn btn-s btn-sm" onclick="loadHistory()"><i class="ti ti-refresh"></i> Refresh</button>'; body.innerHTML=renderHistory(); },
-    settings: ()=>{ title.textContent='Settings'; sub.textContent='Workspace configuration'; body.innerHTML=renderSettings(); }
+    hub:      ()=>{
+      title.textContent='Agent Hub';
+      sub.textContent='Select an agent to get started';
+      body.innerHTML = renderHub();
+    },
+    teamdash: ()=>{
+      title.textContent='Team Dashboard';
+      sub.textContent='All results across agents, organizations, and team members';
+      right.innerHTML='<button class="btn btn-s btn-sm" onclick="loadHistory()"><i class="ti ti-refresh"></i> Refresh</button>';
+      body.innerHTML = renderTeamDashboard();
+    },
+    history:  ()=>{
+      title.textContent='Activity Feed';
+      sub.textContent='All agent runs in chronological order';
+      right.innerHTML='<button class="btn btn-s btn-sm" onclick="loadHistory()"><i class="ti ti-refresh"></i> Refresh</button>';
+      body.innerHTML = renderHistory();
+    },
+    settings: ()=>{
+      title.textContent='Settings';
+      sub.textContent='Workspace configuration';
+      body.innerHTML=renderSettings();
+    }
   };
   if(viewRenders[view]){
     try{ viewRenders[view](); }
@@ -905,9 +931,12 @@ function renderHub(){
 
 /* ==================== TEAM HISTORY ==================== */
 async function loadHistory(){
-  historyLoading=true; render();
+  const targetView = view; // capture view at time of call
+  historyLoading=true;
+  if(view===targetView) render();
   historyData=await DB.loadTeamHistory(historyFilter);
-  historyLoading=false; render();
+  historyLoading=false;
+  if(view===targetView) render(); // only re-render if still on same view
 }
 
 function renderHistory(){
@@ -1895,6 +1924,9 @@ function resetTeamToDefault(){
 })();
 initSupabase();
 render();
+document.addEventListener('DOMContentLoaded', attachNavListeners);
+// Also attach immediately in case DOM is already ready
+if(document.readyState !== 'loading'){ attachNavListeners(); }
 </script>
 </body>
 </html>
