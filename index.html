@@ -339,7 +339,7 @@ textarea{resize:vertical;min-height:90px;line-height:1.6}
 <script>
 /* ==================== CONFIG & TEAM ==================== */
 const TEAM_MEMBERS = [
-  {name:'Sean Reed-McGee',role:'CEO / Founder',color:'#7C3AED',initials:'SR'},
+  {name:'Sean Reed-McGee',role:'CEO / Founder',color:'#7C3AED',initials:'SR',admin:true},
   {name:'Dr. Ndala Booker',role:'CSSO',color:'#2563EB',initials:'NB'},
   {name:'Chad Williamson',role:'COO',color:'#D97706',initials:'CW'},
   {name:'Mariano Carcamo',role:'Operations',color:'#DC2626',initials:'MC'},
@@ -485,6 +485,34 @@ const DB = {
   async deleteAssessment(id){
     if(!supabaseClient) return;
     await supabaseClient.from('assessments').delete().eq('id',id);
+  },
+  async getAgentStatuses(orgName){
+    if(!supabaseClient) return [];
+    try{
+      const {data,error} = await supabaseClient.from('agent_tracker')
+        .select('*').eq('org_name', orgName);
+      return error ? [] : data||[];
+    }catch(e){ return []; }
+  },
+  async upsertAgentStatus(orgName, agentId, status, updatedBy, notes){
+    if(!supabaseClient) return;
+    try{
+      await supabaseClient.from('agent_tracker').upsert([{
+        org_name: orgName,
+        agent_id: agentId,
+        status: status,
+        updated_by: updatedBy,
+        notes: notes||'',
+        updated_at: new Date().toISOString()
+      }], {onConflict: 'org_name,agent_id'});
+    }catch(e){ console.warn('Status update error:',e); }
+  },
+  async getAllAgentStatuses(){
+    if(!supabaseClient) return [];
+    try{
+      const {data,error} = await supabaseClient.from('agent_tracker').select('*');
+      return error ? [] : data||[];
+    }catch(e){ return []; }
   },
   async getTeamStats(){
     if(!supabaseClient) return null;
@@ -931,12 +959,16 @@ function renderHub(){
 
 /* ==================== TEAM HISTORY ==================== */
 async function loadHistory(){
-  const targetView = view; // capture view at time of call
+  const targetView = view;
   historyLoading=true;
   if(view===targetView) render();
-  historyData=await DB.loadTeamHistory(historyFilter);
+  const [history, _statuses] = await Promise.all([
+    DB.loadTeamHistory(historyFilter),
+    loadAgentStatuses()
+  ]);
+  historyData = history;
   historyLoading=false;
-  if(view===targetView) render(); // only re-render if still on same view
+  if(view===targetView) render();
 }
 
 function renderHistory(){
@@ -1503,6 +1535,64 @@ const AG_COLORS = {assess:'#1D9E75',prompts:'#7C3AED',govern:'#D97706',agents:'#
 const AG_ICONS  = {assess:'ti-clipboard-check',prompts:'ti-message-dots',govern:'ti-shield-half',agents:'ti-robot',roadmap:'ti-route',builder:'ti-wand'};
 const AG_SHORT  = {assess:'Assessment',prompts:'Prompts',govern:'Governance',agents:'Agents',roadmap:'Roadmap',builder:'Builder'};
 
+const AGENT_STATUSES = ['Not Started','In Progress','Complete','Live','On Hold'];
+const STATUS_STYLES = {
+  'Not Started': {bg:'var(--g100)',color:'var(--g500)',dot:'#9CA3AF'},
+  'In Progress': {bg:'var(--blueL)',color:'var(--blue)',dot:'#2563EB'},
+  'Complete':    {bg:'var(--greenL)',color:'var(--teal-d)',dot:'#1D9E75'},
+  'Live':        {bg:'#F0FDF4',color:'#166534',dot:'#16A34A'},
+  'On Hold':     {bg:'var(--amberL)',color:'var(--amber)',dot:'#D97706'}
+};
+
+// In-memory cache for agent statuses (org_name+agent_id -> status object)
+let agentStatusCache = {};
+
+async function loadAgentStatuses(){
+  const all = await DB.getAllAgentStatuses();
+  agentStatusCache = {};
+  (all||[]).forEach(function(s){
+    agentStatusCache[s.org_name+'|'+s.agent_id] = s;
+  });
+}
+
+function getAgentStatus(orgName, agentId){
+  const key = orgName+'|'+agentId;
+  return agentStatusCache[key] || {status:'Not Started',updated_by:'',updated_at:''};
+}
+
+async function updateAgentStatus(orgName, agentId, status){
+  const updatedBy = DB.currentUser;
+  agentStatusCache[orgName+'|'+agentId] = {org_name:orgName,agent_id:agentId,status,updated_by:updatedBy,updated_at:new Date().toISOString()};
+  await DB.upsertAgentStatus(orgName, agentId, status, updatedBy, '');
+}
+
+function renderStatusBadge(status){
+  const st = STATUS_STYLES[status]||STATUS_STYLES['Not Started'];
+  return '<span style="display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:500;background:'+st.bg+';color:'+st.color+'">'
+    +'<span style="width:6px;height:6px;border-radius:50%;background:'+st.dot+';flex-shrink:0"></span>'+status+'</span>';
+}
+
+function renderStatusSelect(orgName, agentId, currentStatus, canEdit){
+  if(!canEdit) return renderStatusBadge(currentStatus);
+  const safeOrg = encodeURIComponent(orgName);
+  return '<select class="ssel" data-org="'+safeOrg+'" data-agent="'+agentId+'" onchange="handleStatusChangeEl(this)">'
+    +AGENT_STATUSES.map(function(s){
+      return '<option value="'+s+'"'+(s===currentStatus?' selected':'')+'>'+s+'</option>';
+    }).join('')+'</select>';
+}
+
+async function handleStatusChangeEl(el){
+  const orgName = decodeURIComponent(el.getAttribute('data-org'));
+  const agentId = el.getAttribute('data-agent');
+  await updateAgentStatus(orgName, agentId, el.value);
+  showToast('Status updated to '+el.value);
+}
+
+async function handleStatusChange(orgName, agentId, newStatus){
+  await updateAgentStatus(orgName, agentId, newStatus);
+  showToast('Status updated to '+newStatus);
+}
+
 function timeAgo(dateStr){
   const d=new Date(dateStr), now=new Date();
   const diff=Math.floor((now-d)/1000);
@@ -1605,13 +1695,24 @@ function renderTeamDashboard(){
         ${scoreHtml}
       </div>
       <div class="agent-coverage">
-        ${orgAgentIds.map(a=>{
-          const c=AG_COLORS[a]||'#888';
-          const cnt=items.filter(i=>i.agent_id===a).length;
-          return `<div class="ac-pill done" style="background:${c}15;color:${c};border-color:${c}33"
-            onclick="event.stopPropagation();drillOrgAgent('${esc(org)}','${a}')">
-            <i class="ti ${AG_ICONS[a]||'ti-file'}" style="font-size:11px"></i>${AG_SHORT[a]||a}${cnt>1?` <span style="opacity:.6">${cnt}</span>`:''}
-          </div>`;
+        ${AGENTS.map(a=>{
+          const hasRun = orgAgentIds.includes(a.id);
+          const c = AG_COLORS[a.id]||'#888';
+          const cnt = items.filter(i=>i.agent_id===a.id).length;
+          const statusObj = getAgentStatus(org, a.id);
+          const currentStatus = hasRun && statusObj.status==='Not Started' ? 'Complete' : statusObj.status;
+          const st = STATUS_STYLES[currentStatus]||STATUS_STYLES['Not Started'];
+          if(hasRun){
+            return `<div class="ac-pill done" style="background:${c}15;color:${c};border-color:${c}33"
+              onclick="event.stopPropagation();drillOrgAgent('${esc(org)}','${a.id}')">
+              <span style="width:6px;height:6px;border-radius:50%;background:${st.dot}"></span>
+              <i class="ti ${AG_ICONS[a.id]||'ti-file'}" style="font-size:11px"></i>${AG_SHORT[a.id]||a.id}${cnt>1?` <span style="opacity:.6">${cnt}</span>`:''}
+            </div>`;
+          } else {
+            return `<div class="ac-pill" style="background:var(--g50);color:var(--g400);border-color:var(--g200)" onclick="event.stopPropagation();go('${a.id}')">
+              <i class="ti ${AG_ICONS[a.id]||'ti-file'}" style="font-size:11px"></i>${AG_SHORT[a.id]} <span style="font-size:10px;opacity:.7">+Run</span>
+            </div>`;
+          }
         }).join('')}
       </div>
       <div class="ac-who">
@@ -1683,126 +1784,100 @@ function drillOrgAgent(orgName, agentId){
 }
 
 function renderOrgDetail(orgName){
-  const items = historyData.filter(d=>(d.org_name||'(unnamed)')===orgName);
-  if(!items.length) return `<div class="empty"><i class="ti ti-building"></i><p>No results found for this organization.</p></div>`;
+  const items = historyData.filter(function(d){ return (d.org_name||'(unnamed)')===orgName; });
+  const industry = items.length ? items[0].industry||'' : '';
+  const size = items.length ? items[0].size||'' : '';
+  const isAdmin = DB.isAdmin;
 
-  const industry = items[0]?.industry||'';
-  const size = items[0]?.size||'';
-  // Only agent IDs that have data for this org
-  const orgAgentIds = [...new Set(items.map(i=>i.agent_id))].filter(Boolean);
-  const assessItem = items.find(i=>i.agent_id==='assess');
-  const score = assessItem?.results?.readiness_scores?.overall;
+  // Get agents with results
+  const runAgentIds = [...new Set(items.map(function(i){ return i.agent_id; }))].filter(Boolean);
+  const assessItem = items.find(function(i){ return i.agent_id==='assess'; });
+  const score = assessItem ? (assessItem.results||{}).readiness_scores?.overall : null;
 
-  let html = `
-  <button class="btn btn-s btn-sm" style="margin-bottom:16px" onclick="dashOrgFilter=null;render()">
-    <i class="ti ti-arrow-left"></i> Back to Dashboard
-  </button>
-  <div class="od-header">
-    <div class="od-icon"><i class="ti ti-building"></i></div>
-    <div style="flex:1">
-      <div class="od-name">${esc(orgName)}</div>
-      <div class="od-meta">${esc(industry)}${size?' · '+esc(size)+' organization':''} · ${items.length} agent run${items.length!==1?'s':''}</div>
-    </div>
-    ${score!=null?`<div class="score-chip" style="background:rgba(255,255,255,.15);color:#fff;font-size:22px">${score}<div style="font-size:10px;font-weight:400;opacity:.6;text-align:center">/ 100</div></div>`:''}
-  </div>
-  <div style="margin-bottom:16px">
-    <div class="sec-lbl" style="margin-bottom:10px">Agent Results (${orgAgentIds.length} of 5 run)</div>`;
+  let html = '<button class="btn btn-s btn-sm" style="margin-bottom:16px" onclick="dashOrgFilter=null;render()">'
+    +'<i class="ti ti-arrow-left"></i> Back to Dashboard</button>'
+    +'<div class="od-header">'
+    +'<div class="od-icon"><i class="ti ti-building"></i></div>'
+    +'<div style="flex:1">'
+    +'<div class="od-name">'+esc(orgName)+'</div>'
+    +'<div class="od-meta">'+esc(industry)+(size?' · '+esc(size)+' organization':'')+' · '+(items.length)+' run'+(items.length!==1?'s':'')+' · Admin: '+esc(DB.currentUser)+'</div>'
+    +'</div>'
+    +(score!=null?'<div class="score-chip" style="background:rgba(255,255,255,.15);color:#fff;font-size:22px">'+score+'<div style="font-size:10px;font-weight:400;opacity:.6;text-align:center">/ 100</div></div>':'')
+    +'</div>';
 
-  // Agent coverage summary — ONLY show agents with data
-  html += `<div class="agent-coverage" style="margin-bottom:16px">
-    ${orgAgentIds.map(a=>{
-      const c=AG_COLORS[a]||'#888';
-      const cnt=items.filter(i=>i.agent_id===a).length;
-      return `<div class="ac-pill done" style="background:${c}15;color:${c};border-color:${c}33;cursor:pointer" onclick="scrollTo(0,document.getElementById('arc-${a}')?.offsetTop-80)">
-        <i class="ti ${AG_ICONS[a]||'ti-file'}" style="font-size:11px"></i>${AG_SHORT[a]}${cnt>1?` (${cnt})`:''}</div>`;
-    }).join('')}
-    ${AGENTS.filter(a=>!orgAgentIds.includes(a.id)).map(a=>`
-      <div class="ac-pill" style="background:var(--g50);color:var(--g400);border-color:var(--g200);opacity:.6">
-        <i class="ti ${AG_ICONS[a.id]||'ti-file'}" style="font-size:11px"></i>${AG_SHORT[a.id]} <span style="font-size:10px">not run</span></div>`).join('')}
-  </div></div>`;
+  // Agent status overview — ALL 6 agents always shown
+  html += '<div class="card" style="margin-bottom:16px">'
+    +'<div class="card-title" style="margin-bottom:12px;display:flex;align-items:center;gap:7px">'
+    +'<i class="ti ti-list-check" style="color:var(--teal)"></i>Agent Status Overview'
+    +(isAdmin?'<span class="badge bt" style="font-size:10px;margin-left:4px">Admin — edit all</span>':'')
+    +'</div>';
 
-  // Each agent that has results — expanded by default
-  orgAgentIds.forEach(agId=>{
-    const agItems = items.filter(i=>i.agent_id===agId).sort((a,b)=>new Date(b.created_at)-new Date(a.created_at));
-    const ag = AGENTS.find(a=>a.id===agId);
-    const c = AG_COLORS[agId]||'#888';
+  AGENTS.forEach(function(ag){
+    const agItems = items.filter(function(i){ return i.agent_id===ag.id; });
+    const hasRun = agItems.length > 0;
+    const statusObj = getAgentStatus(orgName, ag.id);
+    const currentStatus = hasRun && statusObj.status==='Not Started' ? 'Complete' : statusObj.status;
+    const c = AG_COLORS[ag.id]||'#888';
+    const canEdit = isAdmin || (agItems.length>0 && agItems[0].run_by===DB.currentUser);
+    const lastRun = agItems.length ? agItems[0] : null;
+    const m = lastRun ? getTeamMembers().find(function(t){ return t.name===lastRun.run_by; }) : null;
+    const col = m ? m.color : '#6B7280';
+    const init = m ? m.initials : (lastRun ? (lastRun.run_by||'?').substring(0,2).toUpperCase() : '--');
 
-    agItems.forEach((item,idx)=>{
-      const r = item.results||{};
-      const m = getTeamMembers().find(t=>t.name===item.run_by);
-      const col = m?.color||'#6B7280';
-      const init = m?.initials||(item.run_by||'?').substring(0,2).toUpperCase();
-
-      // Build summary based on agent type
-      let summaryHtml = '';
-      let scoresHtml = '';
-      if(agId==='assess' && r.readiness_scores){
-        const s=r.readiness_scores;
-        summaryHtml = r.org_summary||r.executive_summary||'';
-        scoresHtml = `<div class="arc-scores">
-          ${[{k:'overall',l:'Overall'},{k:'data_maturity',l:'Data'},{k:'governance_maturity',l:'Governance'},{k:'process_maturity',l:'Process'},{k:'ai_maturity',l:'AI'},{k:'workforce_readiness',l:'Workforce'}].map(d=>{
-            const v=s[d.k]; if(v==null) return '';
-            return `<div class="arc-score-chip" style="background:${scoreColor(v)}18;color:${scoreColor(v)}">${d.l}: ${v}</div>`;
-          }).join('')}
-        </div>`;
-      } else if(agId==='prompts'){
-        const cats=r.categories||[];
-        summaryHtml=r.overview||'';
-        scoresHtml=cats.length?`<div class="arc-scores">${cats.map(c=>`<div class="arc-score-chip" style="background:var(--purpleL);color:var(--purple)">${esc(c.category)} (${(c.prompts||[]).length})</div>`).join('')}</div>`:'';
-      } else if(agId==='govern'){
-        summaryHtml=r.governance_summary||'';
-        const risks=r.risk_register||[];
-        if(risks.length) scoresHtml=`<div class="arc-scores">${[...new Set(risks.map(r=>r.severity))].map(sev=>{const cnt=risks.filter(r=>r.severity===sev).length;const c=sev==='Critical'||sev==='High'?'var(--red)':sev==='Medium'?'var(--amber)':'var(--teal)';return `<div class="arc-score-chip" style="background:${c}18;color:${c}">${cnt} ${sev}</div>`;}).join('')}</div>`;
-      } else if(agId==='agents'){
-        summaryHtml=r.portfolio_summary||'';
-        const ags=r.recommended_agents||[];
-        if(ags.length) scoresHtml=`<div class="arc-scores">${ags.slice(0,5).map(a=>`<div class="arc-score-chip" style="background:var(--redL);color:var(--red)">${esc(a.name)}</div>`).join('')}${ags.length>5?`<div class="arc-score-chip" style="background:var(--g100);color:var(--g400)">+${ags.length-5} more</div>`:''}</div>`;
-      } else if(agId==='roadmap'){
-        summaryHtml=r.roadmap_summary||'';
-        const phases=r.phases||[];
-        if(phases.length) scoresHtml=`<div class="arc-scores">${phases.map(p=>`<div class="arc-score-chip" style="background:var(--blueL);color:var(--blue)">Phase ${p.phase}: ${esc(p.name)}</div>`).join('')}</div>`;
-      }
-
-      html += `<div class="agent-result-card" id="arc-${agId}${idx>0?'-'+idx:''}">
-        <div class="arc-header" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">
-          <div class="arc-icon" style="background:${c}15"><i class="ti ${AG_ICONS[agId]||'ti-file'}" style="font-size:17px;color:${c}"></i></div>
-          <div style="flex:1">
-            <div class="arc-title">${ag?.name||agId}</div>
-            <div class="arc-meta">
-              <span style="display:inline-flex;align-items:center;gap:4px">
-                <span style="display:inline-flex;width:18px;height:18px;border-radius:50%;background:${col}22;color:${col};font-size:8px;font-weight:600;align-items:center;justify-content:center">${init}</span>
-                ${esc(item.run_by||'Unknown')}
-              </span> &nbsp;·&nbsp; ${fmtDate(item.created_at)}
-            </div>
-          </div>
-          <div style="display:flex;gap:7px;align-items:center">
-            <button class="btn btn-p btn-sm" onclick="event.stopPropagation();viewFromHistory('${agId}',${JSON.stringify(item.results||{})})"><i class="ti ti-eye"></i> Full Result</button>
-            <i class="ti ti-chevron-down" style="font-size:16px;color:var(--g300)"></i>
-          </div>
-        </div>
-        <div class="arc-body">
-          ${summaryHtml?`<div class="arc-summary">${esc(summaryHtml)}</div>`:''}
-          ${scoresHtml}
-          <div style="display:flex;gap:8px;margin-top:8px">
-            <button class="btn btn-p btn-sm" onclick="viewFromHistory('${agId}',${JSON.stringify(item.results||{})})"><i class="ti ti-eye"></i> View Full Result</button>
-            <button class="btn btn-s btn-sm" onclick='exportRaw(${JSON.stringify(item)})'><i class="ti ti-download"></i> Export</button>
-          </div>
-        </div>
-      </div>`;
-    });
+    html += '<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--g50)">'
+      +'<div style="width:32px;height:32px;border-radius:var(--rmd);background:'+c+'18;display:flex;align-items:center;justify-content:center;flex-shrink:0">'
+      +'<i class="ti '+(AG_ICONS[ag.id]||'ti-file')+'" style="font-size:16px;color:'+c+'"></i></div>'
+      +'<div style="flex:1;min-width:0">'
+      +'<div style="font-size:13px;font-weight:500;color:var(--g800)">'+ag.name+'</div>'
+      +(hasRun
+        ?'<div style="font-size:11px;color:var(--g400);display:flex;align-items:center;gap:5px;margin-top:2px">'
+          +'<div class="team-avatar" style="background:'+col+'22;color:'+col+';width:16px;height:16px;font-size:8px">'+init+'</div>'
+          +esc(lastRun.run_by||'')+' · '+fmtDate(lastRun.created_at)+'</div>'
+        :'<div style="font-size:11px;color:var(--g400);margin-top:2px">Not yet run</div>')
+      +'</div>'
+      +renderStatusSelect(orgName, ag.id, currentStatus, canEdit)
+      +(hasRun
+        ?'<button class="btn btn-s btn-sm" onclick=\'viewFromHistory("'+ag.id+'",'+JSON.stringify(agItems[0].results||{})+')\' style="flex-shrink:0"><i class="ti ti-eye"></i> View</button>'
+        :'<button class="btn btn-s btn-sm" onclick="go(\''+ag.id+'\')" style="flex-shrink:0;opacity:.6"><i class="ti ti-plus"></i> Run</button>')
+      +'</div>';
   });
+  html += '</div>';
 
-  // Not-yet-run agents
-  const notRun = AGENTS.filter(a=>!orgAgentIds.includes(a.id));
-  if(notRun.length){
-    html += `<div style="margin-top:6px"><div class="sec-lbl" style="margin-bottom:8px">Not yet run for this organization</div>
-    ${notRun.map(a=>`
-      <div style="display:flex;align-items:center;gap:10px;padding:11px 14px;background:#fff;border:1px dashed var(--g200);border-radius:var(--rmd);margin-bottom:7px;opacity:.6">
-        <div class="arc-icon" style="background:var(--g50);width:32px;height:32px"><i class="ti ${a.icon}" style="font-size:15px;color:var(--g300)"></i></div>
-        <div style="flex:1;font-size:13px;color:var(--g400)">${a.name}</div>
-        <button class="btn btn-s btn-sm" onclick="go('${a.id}')"><i class="ti ti-plus"></i> Run Now</button>
-      </div>`).join('')}
-    </div>`;
+  // Detailed results for run agents
+  if(runAgentIds.length){
+    html += '<div class="sec-lbl" style="margin-bottom:10px">Detailed Results</div>';
+    runAgentIds.forEach(function(agId){
+      const agItems2 = items.filter(function(i){ return i.agent_id===agId; }).sort(function(a,b){ return new Date(b.created_at)-new Date(a.created_at); });
+      const ag = AGENTS.find(function(a){ return a.id===agId; });
+      const c = AG_COLORS[agId]||'#888';
+      agItems2.forEach(function(item,idx){
+        const r = item.results||{};
+        const m2 = getTeamMembers().find(function(t){ return t.name===item.run_by; });
+        const col2 = m2 ? m2.color : '#6B7280';
+        const init2 = m2 ? m2.initials : (item.run_by||'?').substring(0,2).toUpperCase();
+        let summary='', scores='';
+        if(agId==='assess'&&r.readiness_scores){ summary=r.org_summary||''; const s=r.readiness_scores; scores='<div class="arc-scores">'+[{k:'overall',l:'Overall'},{k:'data_maturity',l:'Data'},{k:'governance_maturity',l:'Gov'},{k:'ai_maturity',l:'AI'}].map(function(d){ const v=s[d.k]; return v!=null?'<div class="arc-score-chip" style="background:'+scoreColor(v)+'18;color:'+scoreColor(v)+'">'+d.l+': '+v+'</div>':''; }).join('')+'</div>'; }
+        else if(agId==='prompts'){ summary=r.overview||''; const cats=r.categories||[]; scores=cats.length?'<div class="arc-scores">'+cats.map(function(c2){ return '<div class="arc-score-chip" style="background:var(--purpleL);color:var(--purple)">'+esc(c2.category)+' ('+((c2.prompts||[]).length)+')</div>'; }).join('')+'</div>':''; }
+        else if(agId==='govern'){ summary=r.governance_summary||''; const risks=r.risk_register||[]; if(risks.length) scores='<div class="arc-scores">'+[...new Set(risks.map(function(rk){ return rk.severity; }))].map(function(sev){ const cnt=risks.filter(function(rk){ return rk.severity===sev; }).length; const sc=sev==='Critical'||sev==='High'?'var(--red)':sev==='Medium'?'var(--amber)':'var(--teal)'; return '<div class="arc-score-chip" style="background:'+sc+'18;color:'+sc+'">'+cnt+' '+sev+'</div>'; }).join('')+'</div>'; }
+        else if(agId==='agents'){ summary=r.portfolio_summary||''; const ags2=r.recommended_agents||[]; if(ags2.length) scores='<div class="arc-scores">'+ags2.slice(0,4).map(function(a2){ return '<div class="arc-score-chip" style="background:var(--redL);color:var(--red)">'+esc(a2.name)+'</div>'; }).join('')+'</div>'; }
+        else if(agId==='roadmap'){ summary=r.roadmap_summary||''; const phases=r.phases||[]; if(phases.length) scores='<div class="arc-scores">'+phases.map(function(p){ return '<div class="arc-score-chip" style="background:var(--blueL);color:var(--blue)">Phase '+p.phase+': '+esc(p.name)+'</div>'; }).join('')+'</div>'; }
+        else if(agId==='builder'){ summary=r.agent_summary||''; }
+        html+='<div class="agent-result-card" id="arc-'+agId+(idx>0?'-'+idx:'')+'">'
+          +'<div class="arc-header" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'none\'?\'block\':\'none\'">'
+          +'<div class="arc-icon" style="background:'+c+'15"><i class="ti '+(AG_ICONS[agId]||'ti-file')+'" style="font-size:17px;color:'+c+'"></i></div>'
+          +'<div style="flex:1"><div class="arc-title">'+(ag?ag.name:agId)+'</div>'
+          +'<div class="arc-meta"><span style="display:inline-flex;align-items:center;gap:4px"><span style="display:inline-flex;width:18px;height:18px;border-radius:50%;background:'+col2+'22;color:'+col2+';font-size:8px;font-weight:600;align-items:center;justify-content:center">'+init2+'</span>'+esc(item.run_by||'')+'</span> &nbsp;·&nbsp; '+fmtDate(item.created_at)+'</div></div>'
+          +'<div style="display:flex;gap:7px;align-items:center">'
+          +'<button class="btn btn-p btn-sm" onclick=\'event.stopPropagation();viewFromHistory("'+agId+'",'+JSON.stringify(item.results||{})+')\' ><i class="ti ti-eye"></i> Full Result</button>'
+          +'<i class="ti ti-chevron-down" style="font-size:16px;color:var(--g300)"></i></div></div>'
+          +'<div class="arc-body">'
+          +(summary?'<div class="arc-summary">'+esc(summary)+'</div>':'')
+          +scores
+          +'<div style="display:flex;gap:8px;margin-top:8px">'
+          +'<button class="btn btn-p btn-sm" onclick=\'viewFromHistory("'+agId+'",'+JSON.stringify(item.results||{})+')\' ><i class="ti ti-eye"></i> View Full Result</button>'
+          +'</div></div></div>';
+      });
+    });
   }
 
   return html;
